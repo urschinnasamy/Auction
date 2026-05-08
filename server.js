@@ -7,7 +7,7 @@ const server = http.createServer(app);
 // SOCKET SETUP
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173", // Your React frontend URL
+    origin: "*", // Your React frontend URL
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true,
   },
