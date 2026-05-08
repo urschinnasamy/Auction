@@ -18,7 +18,7 @@ const app = express();
 // Middleware
 app.use(cors({
   origin: [
-    "*"
+    "https://auction-frontend-orpin.vercel.app"
     
   ],
   credentials: true,
