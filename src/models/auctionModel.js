@@ -77,93 +77,147 @@ export const getAllTournamentPlayers = async (tournamentId) => {
 };
 
 /* -----------------------------
-   PLACE BID
+   GET MAX BID FOR PLAYER
 ------------------------------*/
-export const placeBid = async (player_id, team_id, amount) => {
-    // Check if player is already sold
-    const checkSold = await pool.query(
-        `SELECT is_sold FROM tournament_players 
-         WHERE player_id = $1 AND tournament_id IN 
-         (SELECT tournament_id FROM teams WHERE id = $2)`,
-        [player_id, team_id]
-    );
-    
-    if (checkSold.rows[0]?.is_sold) {
-        throw new Error("Player is already sold");
+export const getMaxBid = async (player_id, tournament_id) => {
+    try {
+        // Get base price
+        const playerResult = await pool.query(
+            `SELECT base_price FROM male_cricket_players WHERE id = $1`,
+            [player_id]
+        );
+        
+        const basePrice = playerResult.rows[0]?.base_price || 0;
+        
+        // Get max bid for this tournament
+        const result = await pool.query(
+            `
+            SELECT 
+                COALESCE(MAX(amount), $1) as max_bid,
+                (
+                    SELECT team_id 
+                    FROM bids 
+                    WHERE player_id = $2 AND tournament_id = $3
+                    ORDER BY amount DESC 
+                    LIMIT 1
+                ) as highest_bidder_id
+            FROM bids
+            WHERE player_id = $2 AND tournament_id = $3
+            `,
+            [basePrice, player_id, tournament_id]
+        );
+        
+        return {
+            max_bid: parseFloat(result.rows[0]?.max_bid) || basePrice,
+            highest_bidder_id: result.rows[0]?.highest_bidder_id || null
+        };
+    } catch (err) {
+        console.error("getMaxBid error:", err);
+        return {
+            max_bid: 0,
+            highest_bidder_id: null
+        };
     }
-    
-    // Check if team has enough budget (using remaining_purse column)
-    const teamBudget = await pool.query(
-        `SELECT remaining_purse FROM teams WHERE id = $1`,
-        [team_id]
-    );
-    
-    if (teamBudget.rows[0]?.remaining_purse < amount) {
-        throw new Error(`Insufficient budget. Available: ₹${teamBudget.rows[0]?.remaining_purse?.toLocaleString()}`);
-    }
-    
-    const result = await pool.query(
-        `
-        INSERT INTO bids (player_id, team_id, amount)
-        VALUES ($1, $2, $3)
-        RETURNING *
-        `,
-        [player_id, team_id, amount]
-    );
-    return result.rows[0];
 };
 
 /* -----------------------------
-   GET MAX BID FOR PLAYER
+   PLACE BID
 ------------------------------*/
-export const getMaxBid = async (player_id) => {
-    const result = await pool.query(
-        `
-        SELECT COALESCE(MAX(amount), 0) as max_bid,
-               (SELECT team_id FROM bids WHERE player_id = $1 
-                ORDER BY amount DESC LIMIT 1) as highest_bidder_id
-        FROM bids
-        WHERE player_id = $1
-        `,
-        [player_id]
-    );
-    return {
-        max_bid: result.rows[0].max_bid,
-        highest_bidder_id: result.rows[0].highest_bidder_id
-    };
+export const placeBid = async (tournament_id, player_id, team_id, amount) => {
+    try {
+        // Check if player is already sold
+        const checkSold = await pool.query(
+            `SELECT is_sold FROM tournament_players 
+             WHERE player_id = $1 AND tournament_id = $2`,
+            [player_id, tournament_id]
+        );
+        
+        if (checkSold.rows[0]?.is_sold) {
+            throw new Error("Player is already sold");
+        }
+        
+        // Check team budget
+        const teamBudget = await pool.query(
+            `SELECT remaining_purse FROM teams WHERE id = $1`,
+            [team_id]
+        );
+        
+        if (!teamBudget.rows[0] || teamBudget.rows[0].remaining_purse < amount) {
+            throw new Error(`Insufficient budget. Available: ₹${teamBudget.rows[0]?.remaining_purse?.toLocaleString() || 0}`);
+        }
+        
+        // Insert bid
+        const result = await pool.query(
+            `
+            INSERT INTO bids (tournament_id, player_id, team_id, amount, created_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            RETURNING *
+            `,
+            [tournament_id, player_id, team_id, amount]
+        );
+        
+        return result.rows[0];
+    } catch (err) {
+        console.error("placeBid error:", err);
+        throw err;
+    }
 };
 
 /* -----------------------------
    GET HIGHEST BIDDER DETAILS
 ------------------------------*/
-export const getHighestBidder = async (player_id) => {
-    const result = await pool.query(
-        `
-        SELECT 
-            b.amount,
-            b.team_id,
-            t.team_name,
-            t.user_id
-        FROM bids b
-        JOIN teams t ON t.id = b.team_id
-        WHERE b.player_id = $1
-        ORDER BY b.amount DESC
-        LIMIT 1
-        `,
-        [player_id]
-    );
-    return result.rows[0];
+export const getHighestBidder = async (player_id, tournament_id) => {
+    try {
+        const result = await pool.query(
+            `
+            SELECT 
+                b.amount,
+                b.team_id,
+                t.team_name,
+                t.user_id,
+                t.remaining_purse
+            FROM bids b
+            JOIN teams t ON t.id = b.team_id
+            WHERE b.player_id = $1 AND b.tournament_id = $2
+            ORDER BY b.amount DESC
+            LIMIT 1
+            `,
+            [player_id, tournament_id]
+        );
+        return result.rows[0];
+    } catch (err) {
+        console.error("getHighestBidder error:", err);
+        return null;
+    }
 };
 
 /* -----------------------------
-   SELL PLAYER
+   SELL PLAYER (AUTOMATIC)
+------------------------------*/
+/* -----------------------------
+   SELL PLAYER (AUTOMATIC)
 ------------------------------*/
 export const sellPlayer = async (tournament_id, player_id, team_id, price) => {
-    // Start a transaction
     const client = await pool.connect();
     
     try {
         await client.query('BEGIN');
+        
+        // First check if player exists and is not sold
+        const checkPlayer = await client.query(
+            `SELECT is_sold FROM tournament_players 
+             WHERE tournament_id = $1 AND player_id = $2 
+             FOR UPDATE`,
+            [tournament_id, player_id]
+        );
+        
+        if (checkPlayer.rows.length === 0) {
+            throw new Error("Player not found in tournament");
+        }
+        
+        if (checkPlayer.rows[0].is_sold) {
+            throw new Error("Player is already sold");
+        }
         
         // Update tournament_players table
         const result = await client.query(
@@ -171,7 +225,8 @@ export const sellPlayer = async (tournament_id, player_id, team_id, price) => {
             UPDATE tournament_players
             SET is_sold = true,
                 sold_price = $1,
-                sold_to_team_id = $2
+                sold_to_team_id = $2,
+                sold_at = NOW()
             WHERE tournament_id = $3
               AND player_id = $4
             RETURNING *
@@ -179,8 +234,7 @@ export const sellPlayer = async (tournament_id, player_id, team_id, price) => {
             [price, team_id, tournament_id, player_id]
         );
         
-        // Update team's remaining purse (deduct sold price)
-        // Using remaining_purse column from your schema
+        // Update team's remaining purse
         await client.query(
             `
             UPDATE teams
@@ -202,32 +256,56 @@ export const sellPlayer = async (tournament_id, player_id, team_id, price) => {
 };
 
 /* -----------------------------
-   GET TOURNAMENT TEAMS
+   MARK PLAYER AS UNSOLD
 ------------------------------*/
-export const getTournamentTeams = async (tournament_id) => {
+export const markUnsold = async (tournament_id, player_id) => {
     const result = await pool.query(
         `
-        SELECT 
-            t.id,
-            t.team_name,
-            t.team_logo,
-            t.user_id,
-            t.remaining_purse,
-            t.budget_used,
-            t.purse_amount,
-            COALESCE(t.remaining_purse, t.purse_amount, 0) as available_budget,
-            u.name as owner_name
-        FROM teams t
-        JOIN users u ON u.id = t.user_id
-        WHERE t.tournament_id = $1
+        UPDATE tournament_players
+        SET is_sold = false,
+            sold_price = NULL,
+            sold_to_team_id = NULL
+        WHERE tournament_id = $1
+          AND player_id = $2
+        RETURNING *
         `,
-        [tournament_id]
+        [tournament_id, player_id]
     );
-    return result.rows;
+    return result.rows[0];
 };
 
 /* -----------------------------
-   GET SOLD PLAYERS FOR TOURNAMENT
+   GET TOURNAMENT TEAMS
+------------------------------*/
+export const getTournamentTeams = async (tournament_id) => {
+    try {
+        const result = await pool.query(
+            `
+            SELECT 
+                t.id,
+                t.team_name,
+                t.team_logo,
+                t.user_id,
+                t.remaining_purse,
+                t.budget_used,
+                t.purse_amount,
+                COALESCE(t.remaining_purse, t.purse_amount, 0) as available_budget,
+                u.name as owner_name
+            FROM teams t
+            JOIN users u ON u.id = t.user_id
+            WHERE t.tournament_id = $1
+            `,
+            [tournament_id]
+        );
+        return result.rows;
+    } catch (err) {
+        console.error("getTournamentTeams error:", err);
+        return [];
+    }
+};
+
+/* -----------------------------
+   GET SOLD PLAYERS
 ------------------------------*/
 export const getSoldPlayers = async (tournament_id) => {
     const result = await pool.query(
@@ -237,18 +315,42 @@ export const getSoldPlayers = async (tournament_id) => {
             p.position,
             tp.sold_price,
             t.team_name as sold_to_team,
-            t.id as team_id
+            t.id as team_id,
+            tp.sold_at
         FROM tournament_players tp
         JOIN male_cricket_players p ON p.id = tp.player_id
         JOIN teams t ON t.id = tp.sold_to_team_id
         WHERE tp.tournament_id = $1
         AND tp.is_sold = true
+        ORDER BY tp.sold_at ASC
+        `,
+        [tournament_id]
+    );
+    return result.rows;
+};
+
+/* -----------------------------
+   GET UNSOLD PLAYERS
+------------------------------*/
+export const getUnsoldPlayers = async (tournament_id) => {
+    const result = await pool.query(
+        `
+        SELECT 
+            p.id as player_id,
+            p.name,
+            p.position,
+            p.base_price
+        FROM tournament_players tp
+        JOIN male_cricket_players p ON p.id = tp.player_id
+        WHERE tp.tournament_id = $1
+        AND tp.is_sold = false
         ORDER BY tp.id ASC
         `,
         [tournament_id]
     );
     return result.rows;
 };
+
 
 /* -----------------------------
    UPDATE TOURNAMENT STATUS
@@ -257,7 +359,8 @@ export const updateTournamentStatus = async (tournament_id, status) => {
     const result = await pool.query(
         `
         UPDATE tournaments
-        SET status = $1
+        SET status = $1,
+            updated_at = NOW()
         WHERE id = $2
         RETURNING *
         `,
@@ -265,7 +368,6 @@ export const updateTournamentStatus = async (tournament_id, status) => {
     );
     return result.rows[0];
 };
-
 /* -----------------------------
    CHECK IF ALL PLAYERS ARE PROCESSED
 ------------------------------*/
@@ -280,8 +382,9 @@ export const isTournamentComplete = async (tournament_id) => {
         [tournament_id]
     );
     
-    const { total, sold } = result.rows[0];
-    return total === parseInt(sold);
+    const total = parseInt(result.rows[0].total);
+    const sold = parseInt(result.rows[0].sold);
+    return total === sold;
 };
 
 /* -----------------------------
@@ -300,7 +403,7 @@ export const getTeamBudget = async (team_id) => {
 };
 
 /* -----------------------------
-   RESET TEAM BUDGETS FOR TOURNAMENT
+   RESET TEAM BUDGETS
 ------------------------------*/
 export const resetTeamBudgets = async (tournament_id) => {
     const result = await pool.query(
@@ -314,4 +417,21 @@ export const resetTeamBudgets = async (tournament_id) => {
         [tournament_id]
     );
     return result.rows;
+};
+
+/* -----------------------------
+   GET CURRENT PLAYER INDEX
+------------------------------*/
+export const getCurrentPlayerIndex = async (tournament_id) => {
+    const result = await pool.query(
+        `
+        SELECT id, player_id
+        FROM tournament_players
+        WHERE tournament_id = $1 AND is_sold = false
+        ORDER BY id ASC
+        LIMIT 1
+        `,
+        [tournament_id]
+    );
+    return result.rows[0];
 };

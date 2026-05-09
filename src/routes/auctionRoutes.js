@@ -9,47 +9,39 @@ import {
     finishAuction,
     getTournamentTeams,
     getSoldPlayers,
+    getUnsoldPlayers,
     getAuctionStatus,
     getTeamBudget,
     resetAuction,
+    getCurrentPlayer,
 } from "../controllers/auctionController.js";
 
 const router = express.Router();
 
-// Start auction
+// Auction Management
 router.put("/start/:id", startAuction);
-
-// Get players (unsold only)
-router.get("/players/:id", getPlayers);
-
-// Get all players (including sold)
-router.get("/players/all/:id", getAllPlayers);
-
-// Get tournament teams
-router.get("/teams/:id", getTournamentTeams);
-
-// Get sold players
-router.get("/sold/:id", getSoldPlayers);
-
-// Get auction status
-router.get("/status/:id", getAuctionStatus);
-
-// Get team budget
-router.get("/budget/:team_id", getTeamBudget);
-
-// Place a bid
-router.post("/bids", placeBid);
-
-// Sell a player
-router.post("/sell", sellPlayer);
-
-// Mark player as unsold
-router.post("/unsold", unsoldPlayer);
-
-// Finish auction
 router.post("/finish/:id", finishAuction);
 
-// Reset auction (admin only - add auth middleware)
 router.post("/reset/:id", resetAuction);
 
+// Player Management
+router.get("/players/:id", getPlayers);
+router.get("/players/all/:id", getAllPlayers);
+router.get("/current-player/:id", getCurrentPlayer);
+
+// Team Management
+router.get("/teams/:id", getTournamentTeams);
+router.get("/budget/:team_id", getTeamBudget);
+
+// Bidding
+router.post("/bids", placeBid);
+router.post("/sell", sellPlayer);
+router.post("/unsold", unsoldPlayer);
+
+// Results
+router.get("/sold/:id", getSoldPlayers);
+router.get("/unsold/:id", getUnsoldPlayers);
+
+// Status
+router.get("/status/:id", getAuctionStatus);
 export default router;

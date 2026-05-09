@@ -7,7 +7,7 @@ const server = http.createServer(app);
 // SOCKET SETUP
 const io = new Server(server, {
   cors: {
-    origin: "https://auction-frontend-orpin.vercel.app", // Your React frontend URL
+    origin: "http://localhost:5173", // Your React frontend URL
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true,
   },
